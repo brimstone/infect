@@ -121,12 +121,12 @@ static int findpayloadphdr(Elf64_Phdr const *phdr, int count)
 			if (phdr[j].p_offset - endpos > 0 && phdr[j].p_offset - endpos < room) {
 				room = phdr[j].p_offset - endpos;
 			}
-			if ((phdr[i].p_flags & PF_X) && room > biggestroom) {
-				biggestroom = room;
-			}
+		}
+		if ((phdr[i].p_flags & PF_X) && room > biggestroom) {
+			biggestroom = room;
 		}
 		if (listsegments > 0)
-		printf("Segment %2d start: %6ld size: %6ld end: %6ld room: %6ld executable: %-4s\n",
+			 printf("Segment %2d start: %6ld size: %6ld end: %6ld room: %6ld executable: %-4s\n",
 				i, phdr[i].p_offset, phdr[i].p_filesz, endpos, room, (phdr[i].p_flags & PF_X ? "yes!" : "no"));
 	}
 	if (verbose > 0 || listsegments > 0)
