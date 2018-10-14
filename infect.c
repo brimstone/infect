@@ -130,7 +130,10 @@ static int findpayloadphdr(Elf64_Phdr const *phdr, int count)
 				i, phdr[i].p_offset, phdr[i].p_filesz, endpos, room, (phdr[i].p_flags & PF_X ? "yes!" : "no"));
 	}
 	if (verbose > 0 || listsegments > 0)
-		printf("%s has room for %ld bytes of payload.\n", filename, biggestroom - sizeof header);
+		if (biggestroom > sizeof header)
+			printf("%s has room for %ld bytes of payload.\n", filename, biggestroom - sizeof header);
+		else
+			printf("%s has no room for a payload.\n", filename);
 	for (i = 0 ; i < count ; ++i) {
 		if (phdr[i].p_filesz > 0 && phdr[i].p_filesz == phdr[i].p_memsz
 					 && (phdr[i].p_flags & PF_X)) {
