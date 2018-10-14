@@ -74,14 +74,20 @@ static void *mapfile(char const *filename, struct utimbuf *utimbuf)
 	void *ptr;
 	int fd;
 
-	fd = open(filename, O_RDWR);
+	if (skipinfection == 1)
+		fd = open(filename, O_RDONLY, 0);
+	else
+		fd = open(filename, O_RDWR);
 	if (fd < 0)
 		bail(filename, strerror(errno));
 	if (fstat(fd, &stat))
 		bail(filename, strerror(errno));
 	if (!S_ISREG(stat.st_mode))
 		bail(filename, "not an ordinary file.");
-	ptr = mmap(NULL, stat.st_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+	if (skipinfection == 1)
+		ptr = mmap(NULL, stat.st_size, PROT_READ, MAP_SHARED, fd, 0);
+	else
+		ptr = mmap(NULL, stat.st_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
 	if (ptr == MAP_FAILED)
 		bail(filename, strerror(errno));
 	if (utimbuf) {
