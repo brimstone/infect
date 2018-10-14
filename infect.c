@@ -39,6 +39,7 @@ long int payloadlen = 0;
 int verbose = 0;
 int skipinfection = 0;
 int listsegments = 0;
+char *filename;
 
 static void showhelp(char * program){
 	printf("Usage: %s\n", program);
@@ -123,7 +124,7 @@ static int findpayloadphdr(Elf64_Phdr const *phdr, int count)
 				i, phdr[i].p_offset, phdr[i].p_filesz, endpos, room, (phdr[i].p_flags & PF_X ? "yes!" : "no"));
 	}
 	if (verbose > 0 || listsegments > 0)
-		printf("There's room for %ld bytes of payload.\n", biggestroom - sizeof header);
+		printf("%s has room for %ld bytes of payload.\n", filename, biggestroom - sizeof header);
 	for (i = 0 ; i < count ; ++i) {
 		if (phdr[i].p_filesz > 0 && phdr[i].p_filesz == phdr[i].p_memsz
 					 && (phdr[i].p_flags & PF_X)) {
@@ -148,14 +149,13 @@ static int findpayloadphdr(Elf64_Phdr const *phdr, int count)
  */
 int main(int argc, char *argv[])
 {
-	char *filename = calloc (1, sizeof (char));
 	struct utimbuf timestamps;
 	Elf64_Ehdr *ehdr;
 	Elf64_Phdr *phdr;
 	Elf64_Off pos;
 	char *image;
 	int n, opt;
-
+	filename = calloc (1, sizeof (char));
 	// get user options
 	while ((opt = getopt(argc, argv, "hvlf:p:")) != -1) {
 		switch (opt) {
